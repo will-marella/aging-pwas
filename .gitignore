@@ -1,0 +1,15 @@
+# Cohort data and generated artifacts belong outside version control.
+/data/
+/outputs/
+/logs/
+/private/
+/configs/private/
+*.rds
+*.RDS
+*.RData
+*.rda
+.Rhistory
+.Rproj.user/
+.DS_Store
+*.out
+*.err
