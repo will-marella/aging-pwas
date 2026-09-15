@@ -107,7 +107,7 @@ pwas_time_spec <- function(age_center, covariates = list(),
     covariates[[j]] <- declaration[allowed]
   }
   structure(list(
-    version = "0.2.0",
+    version = "0.2.1",
     age_center = as.numeric(age_center),
     covariates = covariates,
     random_effects = random_effects,
@@ -117,7 +117,7 @@ pwas_time_spec <- function(age_center, covariates = list(),
     min_visits_per_subject = 2L,
     fit_method = "ML",
     coefficient_inference = "Satterthwaite",
-    singular_policy = "withhold_inference",
+    singular_policy = "flag_only",
     convergence_policy = "withhold_inference",
     fallback = "none"
   ), class = "pwas_time_spec")

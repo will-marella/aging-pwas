@@ -96,7 +96,9 @@ Each eligible protein gets one maximum-likelihood mixed-model fit. The engine re
 
 `TIME_YEARS` describes the slope at time zero and the chosen age center; `I(TIME_YEARS^2)` describes curvature; `TIME_YEARS:AGE_C` describes how slopes differ by baseline age. Read estimates and uncertainty together. Coefficient magnitudes have different units, and p-values do not measure effect importance. Individual term tests do not provide an omnibus test of the full trajectory.
 
-Failed fits remain in the results with explicit status. Available estimates, standard errors, and covariance may be retained while confidence intervals and p-values are withheld. Use `INFERENCE_OK` and `STATUS` when interpreting results; missing inference is not evidence of no association.
+Converged singular fits retain computed confidence intervals and p-values, including BH adjustment, with `STATUS = "singular"` and `FULL_SINGULAR = TRUE`. `INFERENCE_OK` indicates that coefficient inference was computed successfully; it does not clear the singularity flag. The engine does not refit these proteins with a different random-effects structure.
+
+Other failed fits remain in the results with explicit status. Available estimates, standard errors, and covariance may be retained while confidence intervals and p-values are withheld. Use `INFERENCE_OK`, `STATUS`, and `FULL_SINGULAR` when interpreting results; missing inference is not evidence of no association.
 
 ## Result object and files
 
@@ -139,7 +141,7 @@ The writer accepts a new or empty directory and refuses a nonempty directory. Bo
 
 `n_cores` is explicit and defaults to one. Parallel execution uses Unix fork workers. Results are collected in memory and written after fitting; there is no checkpoint/resume.
 
-Version 0.2.0 removes the earlier draft's likelihood-ratio tests, contrast configuration, and individual table exports. Recreate configurations with the current `pwas_time_spec()` interface; existing output directories are not modified.
+Version 0.2.0 removes the earlier draft's likelihood-ratio tests, contrast configuration, and individual table exports. Version 0.2.1 retains inference for converged singular fits and flags them. Recreate configurations with the current `pwas_time_spec()` interface and rerun fits to obtain previously withheld inference; existing output directories are not modified.
 
 ## Command-line runner
 

@@ -72,7 +72,7 @@ run_pwas_time <- function(pheno, omics, spec, preprocessing, n_cores = 1L, verbo
   result$coefficients <- adjusted$table
   result$multiplicity <- adjusted$families
   finished <- Sys.time()
-  result$metadata <- list(pipeline_version = "0.2.0", specification = spec,
+  result$metadata <- list(pipeline_version = "0.2.1", specification = spec,
     specification_md5 = .pwas_object_md5(spec), preprocessing = preprocessing,
     input_qc = validated$qc, code = code_metadata,
     fixed_formula = paste(deparse(.pwas_formula(spec, random = FALSE)), collapse = " "),
@@ -80,7 +80,7 @@ run_pwas_time <- function(pheno, omics, spec, preprocessing, n_cores = 1L, verbo
     confidence_level = spec$confidence_level,
     estimation = "ML; one model per eligible analyte",
     inference = list(coefficients = "Satterthwaite t"),
-    multiplicity = "BH across valid proteins separately within each coefficient term; withheld p-values excluded",
+    multiplicity = "BH across valid proteins separately within each coefficient term; includes flagged singular fits; withheld p-values excluded",
     started_utc = format(started, tz = "UTC", usetz = TRUE),
     finished_utc = format(finished, tz = "UTC", usetz = TRUE),
     elapsed_seconds = as.numeric(difftime(finished, started, units = "secs")),
@@ -90,7 +90,8 @@ run_pwas_time <- function(pheno, omics, spec, preprocessing, n_cores = 1L, verbo
     session_info = capture.output(utils::sessionInfo()))
   class(result) <- c("pwas_time_result", "list")
   if (verbose) message("[PWAS_Time] Finished in ", round(result$metadata$elapsed_seconds, 1), " seconds; ",
-    sum(result$model_qc$STATUS == "ok"), "/", nrow(result$model_qc), " analytes have complete inference.")
+    sum(vapply(results, function(x) all(x$coefficients$INFERENCE_OK), logical(1L))),
+    "/", nrow(result$model_qc), " analytes have complete inference.")
   result
 }
 

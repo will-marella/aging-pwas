@@ -143,7 +143,7 @@
       }
       coefficients$ESTIMATE <- unname(beta[coefficients$TERM])
       coefficients$SE <- sqrt(diag(covariance))[coefficients$TERM]
-      if (status == "ok") {
+      if (status %in% c("ok", "singular")) {
         extracted <- .pwas_capture(summary(fit, ddf = "Satterthwaite")$coefficients)
         if (is.null(extracted$value) || length(extracted$warnings)) {
           status <- "coefficient_inference_failed"
@@ -161,7 +161,7 @@
       }
     }
   }
-  if (status != "ok") {
+  if (!status %in% c("ok", "singular")) {
     coefficients$DF <- coefficients$CI_LOW <- coefficients$CI_HIGH <- coefficients$P_VALUE <- NA_real_
     coefficients$INFERENCE_OK <- FALSE
   }

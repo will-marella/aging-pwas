@@ -66,6 +66,18 @@ The command resolves repository code independently of the working directory. Inp
 
 Only code, documentation, and synthetic examples belong in this repository. Cohort inputs and results remain on HPC. The ignore rules are a convenience; inspect changes before staging files.
 
+## CARDIA analysis-table runner
+
+`scripts/run_cardia.R` reads the final CARDIA analysis CSV, prepares `pheno`/`omics`, and calls the shared engine. It also requires `dplyr`, `readr`, and `tidyr`. Run from the analysis working directory where `../aging-pwas` is the clone:
+
+```sh
+Rscript ../aging-pwas/scripts/run_cardia.R
+```
+
+It defaults to 20 proteins and two workers. For the full run, set `n_proteins <- NULL`, choose a new output directory, and set the allocated core count. It uses each participant's first `VISIT_AGE_CALC` as baseline, `FEMALE = SEX - 1`, categorical race with reference code 5, and age center 50. The engine validates the prepared inputs. Only `result.rds` and `results.csv` are written. The script can also be sourced in R from the same working directory.
+
+Repeat samples at the same participant-time are averaged per protein on the supplied NPX scale, retaining the first sample ID. Their baseline age, sex, and race must agree. Means use available values; proteins missing in all repeats remain `NA`.
+
 ## Outputs
 
 Each run writes two result files:

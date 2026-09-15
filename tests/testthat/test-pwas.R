@@ -109,18 +109,57 @@ testthat::test_that("two common visits cannot estimate the quadratic model", {
   testthat::expect_true(all(is.na(result$coefficients$P_VALUE)))
 })
 
-testthat::test_that("singular random slopes are flagged without a fallback fit", {
+testthat::test_that("singular random slopes retain direct-fit inference and BH adjustment with flags", {
   p <- fixture$pheno
   t <- p$TIME_YEARS
   i <- rep(seq_len(160), each = 4)
   y <- sin(i) + .04 * t + rep(c(.2, -.2, -.2, .2), 160) * (-1)^i
-  o <- fixture$omics[1L, ]; o[1L, -1L] <- y
-  result <- run_fixture(p, o)
-  testthat::expect_true(result$model_qc$FULL_SINGULAR)
-  testthat::expect_equal(result$model_qc$STATUS, "singular")
-  testthat::expect_true(all(is.finite(result$coefficients$ESTIMATE)))
-  testthat::expect_true(all(is.na(result$coefficients$P_VALUE)))
+  o <- fixture$omics[1:2, ]; o[1L, -1L] <- y
+  result <- testthat::expect_message(
+    run_pwas_time(p, o, spec_fixture, fixture$preprocessing),
+    "2/2 analytes have complete inference")
+  testthat::expect_equal(result$model_qc$FULL_SINGULAR, c(TRUE, FALSE))
+  testthat::expect_equal(result$model_qc$STATUS, c("singular", "ok"))
+  reported <- subset(result$coefficients, ANALYTE_NAME == o$ANALYTE_NAME[1L])
+  testthat::expect_true(all(reported$STATUS == "singular"))
+  testthat::expect_true(all(reported$INFERENCE_OK))
+  testthat::expect_true(all(is.finite(as.matrix(reported[c("DF", "CI_LOW", "CI_HIGH", "P_VALUE")]))))
+
+  d <- p
+  d$AGE_C <- d$BASELINE_AGE - 50
+  d$FEMALE <- factor(d$FEMALE, levels = c(0, 1))
+  d$RESPONSE <- y
+  direct <- suppressMessages(lmerTest::lmer(
+    RESPONSE ~ TIME_YEARS + I(TIME_YEARS^2) + AGE_C + I(AGE_C^2) +
+      TIME_YEARS:AGE_C + FEMALE + SITE + (1 + TIME_YEARS | SUBJECT_ID),
+    data = d, REML = FALSE,
+    control = lme4::lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000L))))
+  testthat::expect_true(lme4::isSingular(direct))
+  ct <- summary(direct, ddf = "Satterthwaite")$coefficients[reported$TERM, ]
+  testthat::expect_equal(reported$P_VALUE, unname(ct[, "Pr(>|t|)"]), tolerance = 1e-7)
+  testthat::expect_equal(reported$DF, unname(ct[, "df"]), tolerance = 1e-7)
+  testthat::expect_equal(reported$CI_LOW,
+    unname(ct[, "Estimate"] - qt(.975, ct[, "df"]) * ct[, "Std. Error"]), tolerance = 1e-7)
+  testthat::expect_equal(reported$CI_HIGH,
+    unname(ct[, "Estimate"] + qt(.975, ct[, "df"]) * ct[, "Std. Error"]), tolerance = 1e-7)
+  for (term in unique(result$coefficients$TERM)) {
+    tab <- subset(result$coefficients, TERM == term)
+    testthat::expect_equal(tab$BH_P_VALUE, p.adjust(tab$P_VALUE, "BH"))
+  }
+  testthat::expect_true(all(result$multiplicity$N_VALID_P == 2L))
+  testthat::expect_true(all(result$multiplicity$N_WITHHELD == 0L))
   testthat::expect_equal(result$metadata$specification$random_effects, "intercept_slope")
+  testthat::expect_equal(result$metadata$specification$singular_policy, "flag_only")
+
+  out <- tempfile("pwas-singular-export-")
+  on.exit(unlink(out, recursive = TRUE))
+  write_pwas_time(result, out)
+  exported <- read.csv(file.path(out, "results.csv"), check.names = FALSE)
+  testthat::expect_equal(exported$FULL_SINGULAR, c(TRUE, FALSE))
+  testthat::expect_equal(exported$STATUS, c("singular", "ok"))
+  testthat::expect_true(all(is.finite(exported[["TIME_YEARS__P_VALUE"]])))
+  testthat::expect_true(all(is.finite(exported[["TIME_YEARS__CI_LOW"]])))
+  testthat::expect_true(all(is.finite(exported[["TIME_YEARS__CI_HIGH"]])))
 })
 
 testthat::test_that("each BH family uses exactly its valid p values", {
