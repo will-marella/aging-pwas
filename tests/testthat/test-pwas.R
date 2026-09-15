@@ -278,3 +278,89 @@ testthat::test_that("parallel fitting uses distinct workers and reproduces seria
   for (component in c("coefficients", "covariance"))
     testthat::expect_equal(result[[component]], fit_fixture[[component]], tolerance = 1e-10)
 })
+
+testthat::test_that("interrupted runs resume from saved proteins and finalize BH only at completion", {
+  out <- tempfile("pwas-resume-")
+  on.exit(unlink(out, recursive = TRUE))
+  original <- .pwas_fit
+  calls <- 0L
+  interrupted <- function(formula, data) {
+    calls <<- calls + 1L
+    if (calls == 3L) stop("simulated interruption")
+    original(formula, data)
+  }
+  run <- function(p = fixture$pheno, o = fixture$omics, s = spec_fixture,
+                  preprocessing = fixture$preprocessing) {
+    run_pwas_time(p, o, s, preprocessing, output_dir = out,
+                  checkpoint_every = 2L, verbose = FALSE)
+  }
+  testthat::expect_error(with_fit_override(interrupted, run()), "simulated interruption")
+  partial <- readRDS(file.path(out, "result.rds"))
+  testthat::expect_equal(partial$metadata$checkpoint$n_completed, 2L)
+  testthat::expect_equal(partial$metadata$checkpoint$n_total, 6L)
+  testthat::expect_false(partial$metadata$checkpoint$complete)
+  testthat::expect_equal(partial$model_qc$ANALYTE_NAME, fixture$omics$ANALYTE_NAME[1:2])
+  testthat::expect_true(all(is.finite(partial$coefficients$P_VALUE)))
+  testthat::expect_true(all(is.na(partial$coefficients$BH_P_VALUE)))
+  csv <- read.csv(file.path(out, "results.csv"), check.names = FALSE)
+  testthat::expect_equal(nrow(csv), 2L)
+  testthat::expect_true(all(is.na(csv[["TIME_YEARS__BH_P_VALUE"]])))
+
+  saved_hashes <- tools::md5sum(list.files(out, full.names = TRUE))
+  altered <- fixture$omics; altered[1, 2] <- altered[1, 2] + 1
+  testthat::expect_error(run(o = altered), "Checkpoint inputs")
+  altered_spec <- spec_fixture; altered_spec$age_center <- 45
+  testthat::expect_error(run(s = altered_spec), "Checkpoint inputs")
+  altered_preprocessing <- fixture$preprocessing
+  altered_preprocessing$normalization <- "Changed normalization"
+  testthat::expect_error(run(preprocessing = altered_preprocessing), "Checkpoint inputs")
+  testthat::expect_equal(tools::md5sum(list.files(out, full.names = TRUE)), saved_hashes)
+
+  calls <- 0L
+  counting <- function(formula, data) {
+    calls <<- calls + 1L
+    original(formula, data)
+  }
+  resumed <- with_fit_override(counting, run())
+  testthat::expect_equal(calls, 4L)
+  testthat::expect_true(resumed$metadata$checkpoint$complete)
+  for (component in c("coefficients", "covariance", "exclusions", "visit_coverage", "multiplicity"))
+    testthat::expect_equal(resumed[[component]], fit_fixture[[component]], tolerance = 1e-10)
+  testthat::expect_equal(readRDS(file.path(out, "result.rds")), resumed)
+  testthat::expect_setequal(list.files(out, all.files = TRUE, no.. = TRUE), c("result.rds", "results.csv"))
+  csv <- read.csv(file.path(out, "results.csv"), check.names = FALSE)
+  testthat::expect_equal(csv$ANALYTE_NAME, fixture$omics$ANALYTE_NAME)
+  testthat::expect_true(all(is.finite(csv[["TIME_YEARS__BH_P_VALUE"]])))
+  calls <- 0L
+  restored <- with_fit_override(counting, run())
+  testthat::expect_equal(calls, 0L)
+  testthat::expect_equal(restored, resumed)
+})
+
+testthat::test_that("parallel checkpoints preserve the ordinary full-run results", {
+  testthat::skip_if(.Platform$OS.type != "unix")
+  out <- tempfile("pwas-parallel-checkpoint-")
+  on.exit(unlink(out, recursive = TRUE))
+  result <- run_pwas_time(fixture$pheno, fixture$omics, spec_fixture, fixture$preprocessing,
+                         n_cores = 2L, output_dir = out, checkpoint_every = 3L, verbose = FALSE)
+  testthat::expect_true(result$metadata$checkpoint$complete)
+  testthat::expect_gte(length(result$metadata$observed_worker_pids), 2L)
+  testthat::expect_false(Sys.getpid() %in% result$metadata$observed_worker_pids)
+  for (component in c("coefficients", "covariance"))
+    testthat::expect_equal(result[[component]], fit_fixture[[component]], tolerance = 1e-10)
+})
+
+testthat::test_that("checkpointing preserves earlier exports and rejects invalid batch sizes", {
+  out <- tempfile("pwas-old-export-")
+  on.exit(unlink(out, recursive = TRUE))
+  write_pwas_time(fit_fixture, out)
+  saved_hashes <- tools::md5sum(list.files(out, full.names = TRUE))
+  testthat::expect_error(run_pwas_time(fixture$pheno, fixture$omics, spec_fixture,
+    fixture$preprocessing, output_dir = out, verbose = FALSE), "not a resumable checkpoint")
+  testthat::expect_equal(tools::md5sum(list.files(out, full.names = TRUE)), saved_hashes)
+  for (size in c(0, NA_real_, Inf, 1.5)) {
+    testthat::expect_error(run_pwas_time(fixture$pheno, fixture$omics, spec_fixture,
+      fixture$preprocessing, output_dir = out, checkpoint_every = size, verbose = FALSE),
+      "checkpoint_every must be a positive integer")
+  }
+})

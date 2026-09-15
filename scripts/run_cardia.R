@@ -4,11 +4,11 @@ library(tidyr)
 
 source("../aging-pwas/R/pwas_time.R")
 
-# Start small. For the full run, set n_proteins <- NULL and choose a new folder.
+# Use NULL for all proteins. Rerun with the same settings/folder to resume.
 n_proteins <- 20L
 n_cores <- 2L
+checkpoint_every <- 50L
 output_dir <- "../Results/PWAS_Time_smoke"
-stopifnot(!file.exists(output_dir))
 
 proteomics <- read_csv(
   "../CARDIA_Proteomics/WTM_CARDIA_Proteomics_analysis_dataset.csv",
@@ -73,6 +73,6 @@ preprocessing <- list(
   missing_values = "Replicate means use available values; all-missing means remain NA; no imputation"
 )
 
-result <- run_pwas_time(pheno, omics, spec, preprocessing, n_cores = n_cores)
+result <- run_pwas_time(pheno, omics, spec, preprocessing, n_cores = n_cores,
+                        output_dir = output_dir, checkpoint_every = checkpoint_every)
 print(summarize_pwas_time(result))
-write_pwas_time(result, output_dir)

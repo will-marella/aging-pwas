@@ -74,9 +74,32 @@ Only code, documentation, and synthetic examples belong in this repository. Coho
 Rscript ../aging-pwas/scripts/run_cardia.R
 ```
 
-It defaults to 20 proteins and two workers. For the full run, set `n_proteins <- NULL`, choose a new output directory, and set the allocated core count. It uses each participant's first `VISIT_AGE_CALC` as baseline, `FEMALE = SEX - 1`, categorical race with reference code 5, and age center 50. The engine validates the prepared inputs. Only `result.rds` and `results.csv` are written. The script can also be sourced in R from the same working directory.
+It defaults to 20 proteins, two workers, and checkpointing every 50 proteins (also at the end of a shorter run). For the full run, set `n_proteins <- NULL`, choose a new output directory, and set the allocated core count. It uses each participant's first `VISIT_AGE_CALC` as baseline, `FEMALE = SEX - 1`, categorical race with reference code 5, and age center 50. The engine validates the prepared inputs. Only `result.rds` and `results.csv` are written. The script can also be sourced in R from the same working directory.
 
 Repeat samples at the same participant-time are averaged per protein on the supplied NPX scale, retaining the first sample ID. Their baseline age, sex, and race must agree. Means use available values; proteins missing in all repeats remain `NA`.
+
+### Checkpoints and tmux
+
+The CARDIA runner updates `result.rds` and `results.csv` after each completed batch. Rerun the same script with the same output folder to resume: preparation runs again, but saved proteins are not refitted. The checkpoint must match the prepared inputs, model, preprocessing, engine code, and model-package versions. Core count and checkpoint interval may change. Completed fits include proteins flagged as singular or failed. Use one running process per output folder.
+
+Each file is replaced through a temporary file; `result.rds` is the authoritative checkpoint. An interruption can lose the current unsaved batch, at most 50 proteins with the default setting. Partial CSVs contain completed proteins with raw p-values/CIs; BH values remain blank until all proteins finish. Console messages show `Saved X/Y analytes`. Earlier outputs without checkpoint metadata require a new folder.
+
+From your analysis working directory, make a local run script:
+
+```sh
+cp ../aging-pwas/scripts/run_cardia.R run_cardia_full.R
+```
+
+Edit its settings to `n_proteins <- NULL`, your allocated `n_cores`, and `output_dir <- "../Results/PWAS_Time_full"`. Then start a persistent terminal and run the script inside it:
+
+```sh
+tmux new -s pwas
+Rscript run_cardia_full.R
+```
+
+Detach with **Ctrl-b**, then **d**. Reconnect using `tmux attach -t pwas`. To stop the R process, attach and press **Ctrl-c**; restart with the same `Rscript` command to resume from the last checkpoint. tmux keeps the terminal session running through an SSH disconnect; checkpointing handles an interrupted R process or machine restart.
+
+For a console log as well, replace the `Rscript` line with `Rscript run_cardia_full.R >> ../Results/PWAS_Time_full.log 2>&1` and monitor it from another terminal with `tail -f ../Results/PWAS_Time_full.log`.
 
 ## Outputs
 

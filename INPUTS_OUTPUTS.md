@@ -102,7 +102,7 @@ Other failed fits remain in the results with explicit status. Available estimate
 
 ## Result object and files
 
-`run_pwas_time(pheno, omics, spec, preprocessing, n_cores = 1L, verbose = TRUE)` returns one result object:
+`run_pwas_time(pheno, omics, spec, preprocessing, n_cores = 1L, verbose = TRUE, output_dir = NULL, checkpoint_every = 50L)` returns one result object. Supplying `output_dir` also enables incremental saving and automatic resume:
 
 | Component | Contents |
 | --- | --- |
@@ -135,13 +135,21 @@ The CSV starts with `ANALYTE_NAME`, `STATUS`, `N_OBS`, `N_SUBJECTS`, `FULL_CONVE
 
 The RDS retains detailed QC and provenance without exporting extra files or storing another copy of the wide CSV table. It contains no input tables, sample/participant identifiers, individual random effects, or fitted-model objects. Declared covariate labels and preprocessing descriptions remain in metadata and must not contain participant identifiers.
 
-`summarize_pwas_time(result)` returns an aggregate console summary. Its exclusion totals sum across proteins, not unique participants or samples. It does not write a separate summary file.
+`summarize_pwas_time(result)` returns an aggregate console summary, including checkpoint progress when enabled. Its exclusion totals sum across proteins, not unique participants or samples. In a partial checkpoint, model status, exclusions, and multiplicity counts describe completed proteins; input QC describes the entire requested input. It does not write a separate summary file.
 
-The writer accepts a new or empty directory and refuses a nonempty directory. Both command-line scripts require a new output location before fitting. The synthetic runner additionally saves its generated `synthetic_pheno.rds`, `synthetic_omics.rds`, and `synthetic_truth.csv` for example reuse.
+The standalone writer accepts a new or empty directory and refuses a nonempty directory. The generic `scripts/run_pwas.R` CLI and synthetic runner use this final-export mode. The synthetic runner additionally saves its generated `synthetic_pheno.rds`, `synthetic_omics.rds`, and `synthetic_truth.csv` for example reuse.
 
-`n_cores` is explicit and defaults to one. Parallel execution uses Unix fork workers. Results are collected in memory and written after fitting; there is no checkpoint/resume.
+With `output_dir` supplied to `run_pwas_time`, results are saved every `checkpoint_every` proteins and after the final batch. The CARDIA runner enables this by default. Only the parent process writes, replacing each file through a temporary file in the output folder and committing `result.rds` last. This RDS is the authoritative checkpoint; rerunning the same analysis resumes after its completed proteins, including flagged/failed fits. An interruption may require refitting the current unsaved batch. Do not run two processes against the same output folder.
+
+Resume requires an identical hash of the validated inputs, model specification, preprocessing declarations, engine source hashes, and model-package versions. Changing worker count or checkpoint interval is allowed. Old exports without checkpoint metadata and mismatched runs are refused. Data preparation and hashing run again on restart; no extra copy of the inputs is saved. `metadata$checkpoint` records `n_completed`, `n_total`, `complete`, and the signature. A completed checkpoint is returned without fitting again.
+
+Partial files contain completed proteins and available raw p-values/CIs. `BH_P_VALUE` stays missing until all requested proteins have finished; final BH correction includes every valid p-value in the requested analysis. There are no extra checkpoint files beyond `result.rds` and `results.csv`. When checkpointing is enabled, the runner already saves the outputs, so do not call the standalone writer afterward.
+
+`n_cores` is explicit and defaults to one. Parallel execution uses Unix fork workers. With `output_dir = NULL`, results are collected in memory and returned after fitting, as before.
 
 Version 0.2.0 removes the earlier draft's likelihood-ratio tests, contrast configuration, and individual table exports. Version 0.2.1 retains inference for converged singular fits and flags them. Recreate configurations with the current `pwas_time_spec()` interface and rerun fits to obtain previously withheld inference; existing output directories are not modified.
+
+Pipeline version 0.3.0 adds checkpoint/resume; the model specification remains version 0.2.1.
 
 ## Command-line runner
 

@@ -36,7 +36,8 @@
   list(table = table, families = families)
 }
 
-run_pwas_time <- function(pheno, omics, spec, preprocessing, n_cores = 1L, verbose = TRUE) {
+run_pwas_time <- function(pheno, omics, spec, preprocessing, n_cores = 1L, verbose = TRUE,
+                          output_dir = NULL, checkpoint_every = 50L) {
   for (package in c("lme4", "lmerTest")) if (!requireNamespace(package, quietly = TRUE))
     stop("Install required R package: ", package, call. = FALSE)
   if (!is.numeric(n_cores) || length(n_cores) != 1L || is.na(n_cores) || !is.finite(n_cores) ||
@@ -45,8 +46,19 @@ run_pwas_time <- function(pheno, omics, spec, preprocessing, n_cores = 1L, verbo
   if (!is.logical(verbose) || length(verbose) != 1L || is.na(verbose)) stop("verbose must be TRUE or FALSE.", call. = FALSE)
   if (.Platform$OS.type != "unix" && n_cores > 1L)
     stop("Parallel execution requires Unix; use n_cores = 1 on Windows.", call. = FALSE)
+  if (!is.null(output_dir)) {
+    if (!is.character(output_dir) || length(output_dir) != 1L || is.na(output_dir) || !nzchar(output_dir))
+      stop("output_dir must be one nonempty path.", call. = FALSE)
+    if (file.exists(output_dir) && !dir.exists(output_dir)) stop("output_dir is a file.", call. = FALSE)
+    if (!is.numeric(checkpoint_every) || length(checkpoint_every) != 1L ||
+        !is.finite(checkpoint_every) || checkpoint_every < 1 ||
+        checkpoint_every != floor(checkpoint_every) || checkpoint_every > .Machine$integer.max)
+      stop("checkpoint_every must be a positive integer.", call. = FALSE)
+  }
   started <- Sys.time()
   code_metadata <- .pwas_code_metadata()
+  package_versions <- vapply(c("lme4", "lmerTest", "Matrix"),
+    function(p) as.character(utils::packageVersion(p)), character(1))
   spec <- .validate_pwas_spec(spec)
   validated <- validate_pwas_inputs(pheno, omics, spec, preprocessing)
   template <- validated$pheno[, c("TIME_YEARS", "AGE_C", "FEMALE", names(spec$covariates)), drop = FALSE]
@@ -55,24 +67,50 @@ run_pwas_time <- function(pheno, omics, spec, preprocessing, n_cores = 1L, verbo
   if (anyDuplicated(design_names))
     stop("Declared factor coding produces duplicate model coefficient names; rename covariates or levels.", call. = FALSE)
   rm(template)
-  indices <- seq_len(nrow(validated$omics))
-  n_workers <- min(as.integer(n_cores), length(indices))
+  n_analytes <- nrow(validated$omics)
+  components <- c("coefficients", "model_qc", "visit_coverage", "exclusions")
+  result <- stats::setNames(vector("list", length(components)), components)
+  result$covariance <- list()
+  signature <- NULL
+  n_completed <- 0L
+  previous_elapsed <- 0
+  started_utc <- format(started, tz = "UTC", usetz = TRUE)
+  if (!is.null(output_dir)) {
+    if (verbose) message("[PWAS_Time] Checking checkpoint inputs.")
+    signature <- .pwas_object_md5(list(pheno = validated$pheno, omics = validated$omics,
+      spec = spec, preprocessing = preprocessing, code = code_metadata$source_md5,
+      package_versions = package_versions))
+    checkpoint_path <- file.path(output_dir, "result.rds")
+    if (dir.exists(output_dir) && length(list.files(output_dir, all.files = TRUE, no.. = TRUE))) {
+      if (!file.exists(checkpoint_path))
+        stop("Output directory is not empty and has no result.rds checkpoint; choose a new directory.", call. = FALSE)
+      saved <- readRDS(checkpoint_path)
+      if (!inherits(saved, "pwas_time_result") || is.null(saved$metadata$checkpoint))
+        stop("Existing result is not a resumable checkpoint; choose a new directory.", call. = FALSE)
+      if (!identical(saved$metadata$checkpoint$signature, signature))
+        stop("Checkpoint inputs, model, preprocessing, code, or package versions differ; choose a new directory.", call. = FALSE)
+      n_completed <- nrow(saved$model_qc)
+      if (n_completed < 1L || n_completed > n_analytes ||
+          !identical(saved$model_qc$ANALYTE_NAME, rownames(validated$omics)[seq_len(n_completed)]) ||
+          !identical(saved$metadata$checkpoint$complete, n_completed == n_analytes))
+        stop("Checkpoint analyte inventory is inconsistent.", call. = FALSE)
+      result <- saved
+      previous_elapsed <- result$metadata$elapsed_seconds
+      started_utc <- result$metadata$started_utc
+      if (n_completed == n_analytes) {
+        .pwas_write_files(result, output_dir)
+        if (verbose) message("[PWAS_Time] All ", n_analytes, " analytes are already complete; no models refitted.")
+        return(result)
+      }
+      if (verbose) message("[PWAS_Time] Resuming after ", n_completed, "/", n_analytes, " completed analytes.")
+    }
+  }
+  indices <- seq.int(n_completed + 1L, n_analytes)
+  batch_size <- if (is.null(output_dir)) length(indices) else as.integer(checkpoint_every)
+  n_workers <- min(as.integer(n_cores), length(indices), batch_size)
   if (verbose) message("[PWAS_Time] Fitting ", length(indices), " analytes with ", n_workers, " worker(s).")
   worker <- function(i) .pwas_analyte(i, validated, spec)
-  results <- if (n_workers == 1L) lapply(indices, worker) else
-    parallel::mclapply(indices, worker, mc.cores = n_workers, mc.preschedule = TRUE, mc.set.seed = FALSE)
-  if (any(vapply(results, inherits, logical(1), what = "try-error")))
-    stop("A parallel worker failed outside a model fit. No partial result was returned.", call. = FALSE)
-  components <- c("coefficients", "model_qc", "visit_coverage", "exclusions")
-  result <- stats::setNames(lapply(components, function(name) {
-    table <- do.call(rbind, lapply(results, `[[`, name)); rownames(table) <- NULL; table
-  }), components)
-  result$covariance <- stats::setNames(lapply(results, `[[`, "covariance"), rownames(validated$omics))
-  adjusted <- .pwas_adjust(result$coefficients, "TERM", "coefficients")
-  result$coefficients <- adjusted$table
-  result$multiplicity <- adjusted$families
-  finished <- Sys.time()
-  result$metadata <- list(pipeline_version = "0.2.1", specification = spec,
+  result$metadata <- list(pipeline_version = "0.3.0", specification = spec,
     specification_md5 = .pwas_object_md5(spec), preprocessing = preprocessing,
     input_qc = validated$qc, code = code_metadata,
     fixed_formula = paste(deparse(.pwas_formula(spec, random = FALSE)), collapse = " "),
@@ -80,18 +118,46 @@ run_pwas_time <- function(pheno, omics, spec, preprocessing, n_cores = 1L, verbo
     confidence_level = spec$confidence_level,
     estimation = "ML; one model per eligible analyte",
     inference = list(coefficients = "Satterthwaite t"),
-    multiplicity = "BH across valid proteins separately within each coefficient term; includes flagged singular fits; withheld p-values excluded",
-    started_utc = format(started, tz = "UTC", usetz = TRUE),
-    finished_utc = format(finished, tz = "UTC", usetz = TRUE),
-    elapsed_seconds = as.numeric(difftime(finished, started, units = "secs")),
+    multiplicity = "BH after all analytes finish, across valid proteins separately within each coefficient term; includes flagged singular fits; withheld p-values excluded",
+    started_utc = started_utc,
     requested_cores = as.integer(n_cores), dispatched_workers = n_workers,
-    observed_worker_pids = sort(unique(result$model_qc$WORKER_PID)),
-    package_versions = vapply(c("lme4", "lmerTest", "Matrix"), function(p) as.character(utils::packageVersion(p)), character(1)),
+    package_versions = package_versions,
     session_info = capture.output(utils::sessionInfo()))
   class(result) <- c("pwas_time_result", "list")
+  batches <- split(indices, ceiling(seq_along(indices) / batch_size))
+  for (batch in batches) {
+    results <- if (n_workers == 1L) lapply(batch, worker) else
+      parallel::mclapply(batch, worker, mc.cores = min(n_workers, length(batch)),
+                        mc.preschedule = TRUE, mc.set.seed = FALSE)
+    if (any(vapply(results, inherits, logical(1), what = "try-error")))
+      stop("A worker failed outside a model fit; any earlier checkpoint is preserved.", call. = FALSE)
+    result$coefficients$BH_P_VALUE <- NULL
+    for (name in components) {
+      table <- rbind(result[[name]], do.call(rbind, lapply(results, `[[`, name)))
+      rownames(table) <- NULL
+      result[[name]] <- table
+    }
+    result$covariance <- c(result$covariance,
+      stats::setNames(lapply(results, `[[`, "covariance"), rownames(validated$omics)[batch]))
+    complete <- nrow(result$model_qc) == n_analytes
+    adjusted <- .pwas_adjust(result$coefficients, "TERM", "coefficients")
+    result$coefficients <- adjusted$table
+    if (!complete) result$coefficients$BH_P_VALUE <- NA_real_
+    result$multiplicity <- adjusted$families
+    finished <- Sys.time()
+    result$metadata$finished_utc <- format(finished, tz = "UTC", usetz = TRUE)
+    result$metadata$elapsed_seconds <- previous_elapsed + as.numeric(difftime(finished, started, units = "secs"))
+    result$metadata$observed_worker_pids <- sort(unique(result$model_qc$WORKER_PID))
+    if (!is.null(output_dir)) {
+      result$metadata$checkpoint <- list(signature = signature, n_completed = nrow(result$model_qc),
+        n_total = n_analytes, complete = complete)
+      .pwas_write_files(result, output_dir)
+      if (verbose) message("[PWAS_Time] Saved ", nrow(result$model_qc), "/", n_analytes, " analytes.")
+    }
+  }
   if (verbose) message("[PWAS_Time] Finished in ", round(result$metadata$elapsed_seconds, 1), " seconds; ",
-    sum(vapply(results, function(x) all(x$coefficients$INFERENCE_OK), logical(1L))),
-    "/", nrow(result$model_qc), " analytes have complete inference.")
+    sum(tapply(result$coefficients$INFERENCE_OK, result$coefficients$ANALYTE_NAME, all)),
+    "/", n_analytes, " analytes have complete inference.")
   result
 }
 
@@ -99,7 +165,8 @@ summarize_pwas_time <- function(result) {
   if (!inherits(result, "pwas_time_result")) stop("Expected a pwas_time_result.", call. = FALSE)
   status <- as.data.frame(table(result$model_qc$STATUS), stringsAsFactors = FALSE)
   names(status) <- c("STATUS", "N_ANALYTES")
-  list(input = result$metadata$input_qc, model_status = status,
+  list(input = result$metadata$input_qc, progress = result$metadata$checkpoint[c("n_completed", "n_total", "complete")],
+       model_status = status,
        exclusions = stats::aggregate(N_SAMPLES ~ REASON, result$exclusions, sum),
        multiplicity = result$multiplicity,
        note = "Exclusions are summed across analytes; they are not unique participant/sample counts.")
@@ -125,13 +192,20 @@ write_pwas_time <- function(result, output_dir) {
   if (file.exists(output_dir) && !dir.exists(output_dir)) stop("output_dir is a file.", call. = FALSE)
   if (dir.exists(output_dir) && length(list.files(output_dir, all.files = TRUE, no.. = TRUE)))
     stop("output_dir is not empty; choose a new directory to preserve existing results.", call. = FALSE)
+  .pwas_write_files(result, output_dir)
+}
+
+# Only the checkpoint runner may replace its existing, matching outputs.
+.pwas_write_files <- function(result, output_dir) {
   if (!dir.exists(output_dir) && !dir.create(output_dir, recursive = TRUE)) stop("Cannot create output_dir.", call. = FALSE)
-  path <- file.path(output_dir, "result.rds")
-  temp <- tempfile(pattern = ".result-", tmpdir = output_dir)
-  on.exit(unlink(temp), add = TRUE)
-  saveRDS(result, temp)
-  if (!file.rename(temp, path)) stop("Could not finalize result.rds.", call. = FALSE)
-  paths <- c(result = path, results = file.path(output_dir, "results.csv"))
-  utils::write.csv(.pwas_results_table(result), paths["results"], row.names = FALSE, na = "")
+  paths <- file.path(output_dir, c(result = "result.rds", results = "results.csv"))
+  names(paths) <- c("result", "results")
+  temp_rds <- tempfile(pattern = ".result-", tmpdir = output_dir)
+  temp_csv <- tempfile(pattern = ".results-", tmpdir = output_dir)
+  on.exit(unlink(c(temp_rds, temp_csv)), add = TRUE)
+  saveRDS(result, temp_rds)
+  utils::write.csv(.pwas_results_table(result), temp_csv, row.names = FALSE, na = "")
+  if (!file.rename(temp_csv, paths["results"])) stop("Could not finalize results.csv.", call. = FALSE)
+  if (!file.rename(temp_rds, paths["result"])) stop("Could not finalize result.rds.", call. = FALSE)
   invisible(paths)
 }
